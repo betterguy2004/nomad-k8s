@@ -15,7 +15,12 @@ output "public_subnet_id" {
 
 output "private_subnet_id" {
   value       = aws_subnet.private.id
-  description = "Private subnet ID"
+  description = "Private subnet ID (AZ1)"
+}
+
+output "private_subnet_ids" {
+  value       = [aws_subnet.private.id, aws_subnet.private_2.id]
+  description = "Private subnet IDs (both AZs for RDS)"
 }
 
 output "cluster_security_group_id" {

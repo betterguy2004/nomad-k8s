@@ -4,8 +4,8 @@ output "node_ids" {
 }
 
 output "node_public_ips" {
-  value       = aws_instance.nomad_cluster[*].public_ip
-  description = "Public IPs for SSH/admin access"
+  value       = aws_eip.nomad_cluster[*].public_ip
+  description = "Elastic IPs for cluster nodes (static)"
 }
 
 output "node_private_ips" {
@@ -14,26 +14,31 @@ output "node_private_ips" {
 }
 
 output "first_node_public_ip" {
-  value       = aws_instance.nomad_cluster[0].public_ip
-  description = "First node public IP (for CloudFront origin)"
+  value       = aws_eip.nomad_cluster[0].public_ip
+  description = "First node Elastic IP (for CloudFront origin)"
 }
 
 output "consul_ui_url" {
-  value       = "http://${aws_instance.nomad_cluster[0].public_ip}:8500"
+  value       = "http://${aws_eip.nomad_cluster[0].public_ip}:8500"
   description = "Consul UI URL"
 }
 
 output "vault_ui_url" {
-  value       = "http://${aws_instance.nomad_cluster[0].public_ip}:8200"
+  value       = "https://${aws_eip.nomad_cluster[0].public_ip}:8200"
   description = "Vault UI URL"
 }
 
 output "nomad_ui_url" {
-  value       = "http://${aws_instance.nomad_cluster[0].public_ip}:4646"
+  value       = "http://${aws_eip.nomad_cluster[0].public_ip}:4646"
   description = "Nomad UI URL"
 }
 
 output "iam_role_arn" {
   value       = aws_iam_role.nomad_cluster.arn
   description = "IAM role ARN for cluster instances"
+}
+
+output "eip_allocation_ids" {
+  value       = aws_eip.nomad_cluster[*].id
+  description = "EIP allocation IDs"
 }

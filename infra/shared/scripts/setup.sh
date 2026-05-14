@@ -54,9 +54,10 @@ sudo apt-get install -yq nginx
 
 # Install Envoy (required for Consul Connect)
 echo "Installing Envoy ${ENVOYVERSION}..."
-curl -sL https://func-e.io/install.sh | sudo bash -s -- -b /usr/local/bin
-func-e use ${ENVOYVERSION}
-sudo cp ~/.func-e/versions/${ENVOYVERSION}/bin/envoy /usr/local/bin/
+curl -sL "https://archive.tetratelabs.io/envoy/download/v${ENVOYVERSION}/envoy-v${ENVOYVERSION}-linux-amd64.tar.xz" -o /tmp/envoy.tar.xz
+sudo tar -xJf /tmp/envoy.tar.xz -C /usr/local/bin --strip-components=2 envoy-v${ENVOYVERSION}-linux-amd64/bin/envoy
+sudo chmod +x /usr/local/bin/envoy
+rm /tmp/envoy.tar.xz
 
 # Install CNI plugins (required for Consul Connect bridge mode)
 echo "Installing CNI plugins..."

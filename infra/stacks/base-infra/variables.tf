@@ -27,13 +27,24 @@ variable "public_subnet_cidr" {
 
 variable "private_subnet_cidr" {
   type        = string
-  description = "CIDR block for private subnet"
+  description = "CIDR block for private subnet (AZ1)"
   default     = "10.0.2.0/24"
+}
+
+variable "private_subnet_cidr_2" {
+  type        = string
+  description = "CIDR block for private subnet (AZ2)"
+  default     = "10.0.3.0/24"
 }
 
 variable "availability_zone" {
   type        = string
-  description = "Availability zone for subnets"
+  description = "Primary availability zone"
+}
+
+variable "availability_zone_2" {
+  type        = string
+  description = "Secondary availability zone (for RDS multi-AZ)"
 }
 
 variable "domain_name" {

@@ -12,6 +12,6 @@ dependency "base_infra" {
 
 inputs = {
   vpc_id                = dependency.base_infra.outputs.vpc_id
-  private_subnet_id     = dependency.base_infra.outputs.private_subnet_id
+  private_subnet_ids    = dependency.base_infra.outputs.private_subnet_ids
   rds_security_group_id = dependency.base_infra.outputs.rds_security_group_id
 }

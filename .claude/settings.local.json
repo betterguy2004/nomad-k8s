@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:developer.hashicorp.com)",
+      "WebFetch(domain:www.nomadproject.io)",
+      "WebFetch(domain:www.vaultproject.io)",
+      "WebFetch(domain:docs.drone.io)",
+      "WebFetch(domain:blog.drone.io)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:releases.hashicorp.com)",
+      "WebFetch(domain:cogarius.medium.com)",
+      "WebFetch(domain:0-8-0.docs.drone.io)",
+      "Bash(mkdir -p \"D:/nomad-k8s/infra/packer\")",
+      "Bash(mkdir -p \"D:/nomad-k8s/infra/shared/scripts\")",
+      "Bash(mkdir -p \"D:/nomad-k8s/infra/shared/config\")",
+      "Bash(docker run *)",
+      "Bash(curl *)",
+      "Bash(aws secretsmanager get-secret-value *)",
+      "Bash(aws ssm describe-instance-information *)",
+      "Bash(ssh *)",
+      "Bash(aws s3 ls *)",
+      "Bash(aws dynamodb describe-table *)",
+      "Bash(git add *)"
+    ]
+  }
+}

@@ -13,9 +13,9 @@ variable "aws_region" {
   description = "AWS region"
 }
 
-variable "private_subnet_id" {
-  type        = string
-  description = "Private subnet ID for RDS"
+variable "private_subnet_ids" {
+  type        = list(string)
+  description = "Private subnet IDs for RDS (requires 2 AZs)"
 }
 
 variable "rds_security_group_id" {
