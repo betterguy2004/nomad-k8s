@@ -415,7 +415,7 @@ New credentials issued; container restarted
 ## Security Architecture
 
 **Layers**:
-1. **Network** — Security groups restrict ports; private subnets isolate workloads
+1. **Network** — Security groups restrict ports; RDS isolated in private subnet; EC2 in public subnet with restricted admin access
 2. **Secrets** — Vault manages all credentials; dynamic rotation for databases
 3. **Service Mesh** — Consul Connect mTLS encrypts inter-service traffic
 4. **Access Control** — Consul Intentions enforce allow/deny rules
