@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -e
+
+exec > >(sudo tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+
+echo "Starting HashiStack bootstrap..."
+
+sudo bash /ops/shared/scripts/server.sh \
+  "aws" \
+  "${server_count}" \
+  "provider=aws tag_key=ConsulAutoJoin tag_value=${cluster_name}" \
+  "${region}" \
+  "${kms_key_id}"
+
+echo "Bootstrap complete!"

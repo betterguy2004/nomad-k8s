@@ -1,0 +1,64 @@
+kind: pipeline
+type: docker
+name: laravel
+
+trigger:
+  branch:
+    - main
+  event:
+    - push
+
+steps:
+  - name: test
+    image: php:8.2-cli
+    commands:
+      - composer install
+      - php artisan test
+
+  - name: build
+    image: plugins/docker
+    settings:
+      repo: asdads6495/laravel
+      tags:
+        - ${DRONE_COMMIT_SHA:0:8}
+        - latest
+      username:
+        from_secret: dockerhub_username
+      password:
+        from_secret: dockerhub_password
+      dockerfile: docker/laravel/Dockerfile
+      context: docker/laravel
+
+  - name: deploy
+    image: asdads6495/nomad-deploy
+    environment:
+      NOMAD_ADDR: http://nomad.service.consul:4646
+      NOMAD_TOKEN:
+        from_secret: nomad_token
+    commands:
+      - |
+        nomad job run \
+          -var="docker_image_tag=${DRONE_COMMIT_SHA:0:8}" \
+          -var-file=jobs/vars/dev.vars \
+          jobs/laravel.nomad.hcl
+
+---
+kind: secret
+name: dockerhub_username
+get:
+  path: secret/data/drone
+  name: dockerhub_username
+
+---
+kind: secret
+name: dockerhub_password
+get:
+  path: secret/data/drone
+  name: dockerhub_password
+
+---
+kind: secret
+name: nomad_token
+get:
+  path: secret/data/drone
+  name: nomad_token
