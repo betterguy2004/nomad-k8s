@@ -20,6 +20,7 @@ manifest.json
 
 # Secrets
 *.pem
+infra/*.pem
 *.key
 .env
 .env.*
@@ -39,3 +40,4 @@ Thumbs.db
 
 # Logs
 *.log
+.vault-root-token
