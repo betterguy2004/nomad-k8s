@@ -5,7 +5,7 @@ remote_state {
     if_exists = "overwrite_terragrunt"
   }
   config = {
-    bucket         = "nomad-infra-tfstate-dev"
+    bucket         = "nomad-infra-tfstate-dev-160885253955"
     key            = "${path_relative_to_include()}/terraform.tfstate"
     region         = "us-west-1"
     encrypt        = true
