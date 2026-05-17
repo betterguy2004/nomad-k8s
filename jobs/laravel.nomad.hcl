@@ -1,3 +1,9 @@
+variable "docker_image_tag" {
+  description = "Docker image tag for Laravel"
+  type        = string
+  default     = "latest"
+}
+
 job "laravel" {
   datacenters = ["dc1"]
   type        = "service"
@@ -22,7 +28,7 @@ job "laravel" {
       }
 
       config {
-        image   = "asdads6495/laravel:latest"
+        image   = "asdads6495/laravel:${var.docker_image_tag}"
         command = "php"
         args    = ["artisan", "migrate", "--force"]
       }
@@ -50,7 +56,7 @@ EOF
       driver = "docker"
 
       config {
-        image = "asdads6495/laravel:latest"
+        image = "asdads6495/laravel:${var.docker_image_tag}"
         ports = ["fpm"]
       }
 

@@ -23,7 +23,9 @@ job "drone-runner" {
 {{- with secret "secret/data/drone/server" }}
 DRONE_RPC_SECRET={{ .Data.data.rpc_secret }}
 {{- end }}
-DRONE_RPC_HOST=drone-server.service.consul
+{{- range service "drone-server" }}
+DRONE_RPC_HOST={{ .Address }}:{{ .Port }}
+{{- end }}
 DRONE_RPC_PROTO=http
 DRONE_RUNNER_CAPACITY=2
 DRONE_RUNNER_NAME={{ env "attr.unique.hostname" }}

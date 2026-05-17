@@ -43,15 +43,11 @@ steps:
       context: docker/laravel
 
   - name: deploy
-    image: asdads6495/nomad-deploy
+    image: hashicorp/nomad:latest
     environment:
-      NOMAD_ADDR: http://nomad.service.consul:4646
+      NOMAD_ADDR: http://54.177.94.213:4646
       NOMAD_TOKEN:
         from_secret: nomad_token
     commands:
-      - |
-        nomad job run \
-          -var="docker_image_tag=${DRONE_COMMIT_SHA:0:8}" \
-          -var-file=jobs/vars/dev.vars \
-          jobs/laravel.nomad.hcl
+      - nomad job run -var="docker_image_tag=${DRONE_COMMIT_SHA:0:8}" jobs/laravel.nomad.hcl
 
