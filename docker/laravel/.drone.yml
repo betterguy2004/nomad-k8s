@@ -55,23 +55,3 @@ steps:
           -var-file=jobs/vars/dev.vars \
           jobs/laravel.nomad.hcl
 
----
-kind: secret
-name: dockerhub_username
-get:
-  path: secret/data/drone
-  name: dockerhub_username
-
----
-kind: secret
-name: dockerhub_password
-get:
-  path: secret/data/drone
-  name: dockerhub_password
-
----
-kind: secret
-name: nomad_token
-get:
-  path: secret/data/drone
-  name: nomad_token
