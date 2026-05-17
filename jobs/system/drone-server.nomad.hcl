@@ -15,12 +15,12 @@ job "drone-server" {
       read_only = false
     }
 
-    vault {
-      policies = ["drone"]
-    }
-
     task "server" {
       driver = "docker"
+
+      vault {
+        role = "nomad-workloads"
+      }
 
       config {
         image = "drone/drone:2"
@@ -34,18 +34,18 @@ job "drone-server" {
 
       template {
         data = <<EOF
-{{with secret "secret/data/drone"}}
-DRONE_GITHUB_CLIENT_ID={{.Data.data.github_client_id}}
-DRONE_GITHUB_CLIENT_SECRET={{.Data.data.github_client_secret}}
-DRONE_RPC_SECRET={{.Data.data.rpc_secret}}
-{{end}}
+{{- with secret "secret/data/drone/server" }}
+DRONE_GITHUB_CLIENT_ID={{ .Data.data.github_client_id }}
+DRONE_GITHUB_CLIENT_SECRET={{ .Data.data.github_client_secret }}
+DRONE_RPC_SECRET={{ .Data.data.rpc_secret }}
+{{- end }}
 DRONE_SERVER_HOST=drone.hungpq.io.vn
 DRONE_SERVER_PROTO=https
 DRONE_DATABASE_DRIVER=sqlite3
 DRONE_DATABASE_DATASOURCE=/data/database.sqlite
 DRONE_USER_CREATE=username:betterguy2004,admin:true
 EOF
-        destination = "secrets/env"
+        destination = "secrets/drone.env"
         env         = true
       }
 
