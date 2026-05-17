@@ -17,13 +17,16 @@ steps:
       DB_CONNECTION: sqlite
       DB_DATABASE: ":memory:"
     commands:
-      - apt-get update && apt-get install -y git unzip libzip-dev
-      - docker-php-ext-install zip
+      - apt-get update && apt-get install -y git unzip libzip-dev libsqlite3-dev
+      - docker-php-ext-install zip pdo_sqlite
       - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-      - mkdir -p docker/laravel/bootstrap/cache docker/laravel/storage/framework/{sessions,views,cache}
-      - cd docker/laravel && composer install --no-interaction --no-scripts
-      - cd docker/laravel && php artisan key:generate --force
-      - cd docker/laravel && ./vendor/bin/phpunit
+      - cd docker/laravel
+      - mkdir -p bootstrap/cache storage/framework/sessions storage/framework/views storage/framework/cache storage/logs
+      - chmod -R 777 bootstrap/cache storage
+      - composer install --no-interaction --no-scripts
+      - cp .env.example .env
+      - php artisan key:generate --force
+      - ./vendor/bin/phpunit
 
   - name: build
     image: plugins/docker
