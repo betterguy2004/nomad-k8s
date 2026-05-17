@@ -12,7 +12,7 @@ job "laravel" {
     count = 2
 
     network {
-      port "fpm" { to = 9000 }
+      port "http" { to = 80 }
     }
 
     vault {
@@ -57,7 +57,7 @@ EOF
 
       config {
         image = "asdads6495/laravel:${var.docker_image_tag}"
-        ports = ["fpm"]
+        ports = ["http"]
       }
 
       template {
@@ -87,7 +87,7 @@ EOF
 
       service {
         name = "laravel"
-        port = "fpm"
+        port = "http"
 
         check {
           type     = "tcp"
