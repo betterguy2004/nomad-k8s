@@ -231,65 +231,79 @@ Nomad tự động:
 │                      VAULT POLICIES                              │
 │                                                                  │
 │  ┌─────────────────┐                                            │
-│  │ wordpress       │                                            │
+│  │ wordpress-      │                                            │
+│  │ secrets         │──► CAN read secret/data/wordpress/*        │
 │  │ policy          │                                            │
-│  │                 │                                            │
-│  │ path "database/ │──► CAN read database/creds/wordpress       │
-│  │   creds/        │                                            │
-│  │   wordpress"    │                                            │
-│  │ { read }        │                                            │
-│  │                 │                                            │
-│  │ path "secret/   │──► CAN read secret/data/wordpress/*        │
-│  │   data/         │                                            │
-│  │   wordpress/*"  │                                            │
-│  │ { read }        │──► CANNOT read secret/data/laravel/*       │
-│  └─────────────────┘    CANNOT read database/creds/laravel      │
-│                                                                  │
-│  ┌─────────────────┐                                            │
-│  │ laravel         │                                            │
-│  │ policy          │──► CAN read database/creds/laravel         │
-│  │ { similar }     │──► CAN read secret/data/laravel/*          │
 │  └─────────────────┘                                            │
 │                                                                  │
 │  ┌─────────────────┐                                            │
-│  │ drone           │                                            │
+│  │ drone-secrets   │                                            │
 │  │ policy          │──► CAN read secret/data/drone/*            │
-│  │ { read only }   │──► CANNOT read database/*                  │
 │  └─────────────────┘                                            │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ nomad-workloads role (JWT auth)                          │    │
+│  │   policies = ["wordpress-secrets", "drone-secrets"]      │    │
+│  │   bound_audiences = ["vault.io"]                         │    │
+│  │   user_claim = "nomad_job_id"                            │    │
+│  └─────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Nomad-Vault Integration
+### Nomad-Vault Integration (Workload Identity)
+
+Nomad 2.x uses **Workload Identity** with JWT tokens instead of static Vault tokens.
 
 ```
-Nomad Job Definition
-        │
-        │  vault {
-        │    policies = ["wordpress"]
-        │  }
-        │
-        ▼
-┌───────────────────────────────────────────────────────────────┐
-│ Nomad Server                                                   │
-│                                                                │
-│  1. Nomad có Vault token với policy "nomad-server"             │
-│  2. Nomad tạo child token với policy "wordpress" cho job       │
-│  3. Child token được inject vào container                      │
-│                                                                │
-│  Token hierarchy:                                              │
-│                                                                │
-│  Vault Root Token (không dùng trong runtime)                   │
-│        │                                                       │
-│        ▼                                                       │
-│  Nomad Server Token (policy: nomad-server)                     │
-│        │                                                       │
-│        ├──► WordPress Job Token (policy: wordpress)            │
-│        │                                                       │
-│        ├──► Laravel Job Token (policy: laravel)                │
-│        │                                                       │
-│        └──► Drone Job Token (policy: drone)                    │
-└───────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                  WORKLOAD IDENTITY FLOW                          │
+│                                                                  │
+│  Nomad Job Definition                                            │
+│         │                                                        │
+│         │  task "wordpress" {                                    │
+│         │    vault { role = "nomad-workloads" }                  │
+│         │  }                                                     │
+│         │                                                        │
+│         ▼                                                        │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ Nomad Server                                             │    │
+│  │                                                          │    │
+│  │  1. Generates JWT token with claims:                     │    │
+│  │     - aud: ["vault.io"]                                  │    │
+│  │     - nomad_job_id: "wordpress"                          │    │
+│  │     - nomad_namespace: "default"                         │    │
+│  │     - nomad_task: "wordpress"                            │    │
+│  │                                                          │    │
+│  │  2. Signs JWT with Nomad's private key                   │    │
+│  │     (JWKS available at /.well-known/jwks.json)           │    │
+│  └──────────────────────────┬──────────────────────────────┘    │
+│                             │                                    │
+│                             ▼                                    │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ Vault JWT Auth (path: jwt-nomad)                         │    │
+│  │                                                          │    │
+│  │  1. Validates JWT signature via Nomad JWKS               │    │
+│  │  2. Checks bound_audiences = "vault.io"                  │    │
+│  │  3. Maps claims to token metadata                        │    │
+│  │  4. Returns Vault token with assigned policies           │    │
+│  └──────────────────────────┬──────────────────────────────┘    │
+│                             │                                    │
+│                             ▼                                    │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ Container Environment                                    │    │
+│  │                                                          │    │
+│  │  Vault token injected, templates rendered:               │    │
+│  │  {{with secret "secret/data/wordpress/keys"}}            │    │
+│  │  WORDPRESS_AUTH_KEY={{.Data.data.auth_key}}              │    │
+│  │  {{end}}                                                 │    │
+│  └─────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+**Benefits of Workload Identity:**
+- No static Vault tokens stored in Nomad config
+- Automatic token rotation via JWT TTL
+- Fine-grained identity per task (job_id, namespace, task name in claims)
 
 ---
 
@@ -392,14 +406,15 @@ Nomad Job Definition
 
 | Secret Type | Path | Consumer | TTL | Rotation |
 |-------------|------|----------|-----|----------|
-| DB Creds (WP) | `database/creds/wordpress` | WordPress | 1h | Auto |
-| DB Creds (Laravel) | `database/creds/laravel` | Laravel | 1h | Auto |
-| WP Auth Keys | `secret/wordpress` | WordPress | Static | Manual |
-| Laravel App Key | `secret/laravel` | Laravel | Static | Manual |
-| DockerHub Creds | `secret/drone` | Drone CI | Static | Manual |
-| Nomad Token | `secret/drone` | Drone CI | Static | Manual |
+| WP Auth Keys | `secret/wordpress/keys` | WordPress | Static | Manual |
+| WP DB Creds | `secret/wordpress/db` | WordPress | Static | Manual |
+| Drone Server | `secret/drone/server` | Drone | Static | Manual |
+| Nomad ACL Token | N/A | Admin only | N/A | After bootstrap |
 | Vault Root Token | N/A | Admin only | N/A | After init |
 | AWS KMS Key | AWS | Vault | N/A | AWS managed |
+
+**Auth Method:** JWT (Workload Identity) at path `jwt-nomad`
+**Role:** `nomad-workloads` (bound to audience `vault.io`)
 
 ---
 
@@ -409,32 +424,33 @@ Nomad Job Definition
 # Check Vault status
 vault status
 
-# List enabled secrets engines
-vault secrets list
+# List auth methods
+vault auth list
 
-# Test database credentials
-vault read database/creds/wordpress
-vault read database/creds/laravel
+# Check JWT auth config
+vault read auth/jwt-nomad/config
+vault read auth/jwt-nomad/role/nomad-workloads
 
 # Test KV secrets
-vault kv get secret/wordpress
-vault kv get secret/laravel
-vault kv get secret/drone
+vault kv get secret/wordpress/keys
+vault kv get secret/wordpress/db
+vault kv get secret/drone/server
 
 # Check Vault policies
 vault policy list
-vault policy read wordpress
+vault policy read wordpress-secrets
+vault policy read drone-secrets
 
-# Check Consul intentions
-consul intention list
-consul intention check nginx wordpress
+# Check Nomad JWKS endpoint (for JWT validation)
+curl http://localhost:4646/.well-known/jwks.json
 
 # Debug Nomad job secrets
 nomad alloc logs <alloc-id>
-nomad alloc exec <alloc-id> env | grep -E "DB_|APP_"
+nomad alloc exec <alloc-id> env | grep -E "WORDPRESS_|DRONE_"
 
-# Rotate database credentials manually
-vault lease revoke -prefix database/creds/wordpress
+# Check Nomad ACL
+export NOMAD_TOKEN=<bootstrap-token>
+nomad acl token self
 ```
 
 ---

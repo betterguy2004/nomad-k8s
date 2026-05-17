@@ -222,50 +222,71 @@ NODE_IP=$(aws ec2 describe-instances \
 # For now, verify via API instead of SSH
 ```
 
-## Step 5: Initialize Vault
+## Step 5: Initialize Vault & Nomad ACL
 
-Set up Vault policies, database engine, and static secrets.
+Set up Nomad ACL, Vault JWT auth (Workload Identity), and secrets.
+
+### 5a. Set Environment Variables
 
 ```bash
-cd vault
+# Required for vault-migration.sh
+export VAULT_ADDR=https://<node-ip>:8200
+export VAULT_TOKEN=<vault-root-token>
+export NOMAD_NODES="<node1-ip> <node2-ip> <node3-ip>"
+export SSH_KEY=/path/to/nomad-key.pem
 
-# Make script executable
-chmod +x init-vault.sh
+# WordPress secrets (generate at https://api.wordpress.org/secret-key/1.1/salt/)
+export WP_AUTH_KEY="..."
+export WP_SECURE_AUTH_KEY="..."
+export WP_LOGGED_IN_KEY="..."
+export WP_NONCE_KEY="..."
+export WP_AUTH_SALT="..."
+export WP_SECURE_AUTH_SALT="..."
+export WP_LOGGED_IN_SALT="..."
+export WP_NONCE_SALT="..."
+export WP_DB_HOST="<rds-endpoint>"
+export WP_DB_USER="admin"
+export WP_DB_PASSWORD="<rds-password>"
+export WP_DB_NAME="wordpress"
+```
 
-# Run initialization
-./init-vault.sh
+### 5b. Run Vault Migration Script
 
-# Output includes root token (save securely)
-# Token location: .vault-root-token (gitignored)
+```bash
+cd scripts
+
+# Deploy Nomad config with ACL + Workload Identity
+./vault-migration.sh phase1-config
+./vault-migration.sh phase1-restart
+
+# Bootstrap Nomad ACL (SAVE THE TOKEN!)
+ssh -i $SSH_KEY ubuntu@<node1-ip> 'nomad acl bootstrap'
+export NOMAD_TOKEN=<bootstrap-token>
+
+# Configure Vault JWT auth + store secrets
+./vault-migration.sh vault-only
 ```
 
 **Script does**:
-1. Initializes Vault (only if not already initialized)
-2. Creates database engine config
-3. Creates WordPress + Laravel database roles
-4. Creates Vault policies
-5. Creates static secrets in KV v2
+1. Enables Nomad ACL system
+2. Configures Workload Identity (JWT auth to Vault)
+3. Creates `jwt-nomad` auth method in Vault
+4. Creates `wordpress-secrets` and `drone-secrets` policies
+5. Stores secrets in Vault KV v2
 
-### Verify Vault
+### 5c. Verify Setup
 
 ```bash
-# Export for API calls
-export VAULT_ADDR=http://$LB_IP:8200
-export VAULT_TOKEN=$(cat .vault-root-token)
+# Check Nomad JWKS endpoint
+curl http://<node-ip>:4646/.well-known/jwks.json
 
-# List enabled engines
-vault secrets list
+# Check Vault JWT auth
+vault read auth/jwt-nomad/config
+vault read auth/jwt-nomad/role/nomad-workloads
 
-# Test database role
-vault read database/creds/wordpress
-# Expected: username "v-nomad-wordpress-xxx", password "yyy"
-
-# Test KV secrets
-vault kv get secret/wordpress
-# Expected: auth_key, secure_auth_key, etc.
-
-# List policies
-vault policy list
+# Check secrets
+vault kv get secret/wordpress/keys
+vault kv get secret/wordpress/db
 ```
 
 ## Step 6: Deploy CloudFront (Optional)

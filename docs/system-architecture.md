@@ -336,50 +336,73 @@ On startup, Vault automatically:
 
 ### Vault Policies
 
-Example `wordpress` policy:
 ```hcl
-path "database/creds/wordpress" {
+# wordpress-secrets policy
+path "secret/data/wordpress/*" {
   capabilities = ["read"]
 }
 
-path "secret/data/wordpress/*" {
+# drone-secrets policy
+path "secret/data/drone/*" {
   capabilities = ["read"]
 }
 ```
 
-Only the WordPress job can access these paths. Laravel job has separate policy, cannot read WordPress secrets.
+### Nomad-Vault Integration (Workload Identity)
 
-### Nomad-Vault Integration
+Uses **JWT authentication** instead of static tokens.
 
-1. **Job Definition** includes Vault policy:
+1. **Nomad Server Config** enables Workload Identity:
    ```hcl
    vault {
-     policies = ["wordpress"]
+     enabled = true
+     address = "https://10.0.1.49:8200"
+     default_identity {
+       aud = ["vault.io"]
+       ttl = "1h"
+     }
    }
    ```
 
-2. **Nomad Server** (has `nomad-server` policy):
-   - Creates child token with `wordpress` policy
-   - Injects token into container at `$VAULT_TOKEN`
+2. **Job Definition** references Vault role:
+   ```hcl
+   task "wordpress" {
+     vault {
+       role = "nomad-workloads"
+     }
+   }
+   ```
 
-3. **Template Blocks** in job use Vault:
+3. **Vault JWT Auth** validates Nomad-signed JWTs:
+   ```hcl
+   # auth/jwt-nomad/role/nomad-workloads
+   bound_audiences = ["vault.io"]
+   user_claim      = "nomad_job_id"
+   token_policies  = ["wordpress-secrets", "drone-secrets"]
+   ```
+
+4. **Template Blocks** fetch secrets from Vault:
    ```hcl
    template {
      data = <<EOF
-   {{with secret "database/creds/wordpress"}}
-   DB_USER={{.Data.username}}
-   DB_PASSWORD={{.Data.password}}
-   {{end}}
+   {{- with secret "secret/data/wordpress/keys" }}
+   WORDPRESS_AUTH_KEY={{ .Data.data.auth_key }}
+   {{- end }}
+   {{- with secret "secret/data/wordpress/db" }}
+   WORDPRESS_DB_PASSWORD={{ .Data.data.password }}
+   {{- end }}
      EOF
-     destination = "secrets/env"
+     destination = "secrets/wordpress.env"
      env         = true
    }
    ```
 
-4. **Nomad Agent** (in allocations):
-   - Watches lease TTL
-   - Renews before expiry
-   - Restarts task if renewal fails
+5. **Authentication Flow**:
+   - Nomad generates JWT with task identity claims
+   - JWT signed with Nomad's key (JWKS at `/.well-known/jwks.json`)
+   - Vault validates JWT via JWKS
+   - Vault returns token with assigned policies
+   - Template blocks render secrets into container
 
 ---
 
