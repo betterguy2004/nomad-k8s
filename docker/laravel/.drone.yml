@@ -11,9 +11,17 @@ trigger:
 steps:
   - name: test
     image: php:8.2-cli
+    environment:
+      APP_ENV: testing
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ":memory:"
     commands:
-      - composer install
-      - php artisan test
+      - apt-get update && apt-get install -y git unzip libzip-dev
+      - docker-php-ext-install zip
+      - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+      - cd docker/laravel && composer install --no-interaction
+      - cd docker/laravel && php artisan key:generate --force
+      - cd docker/laravel && ./vendor/bin/phpunit
 
   - name: build
     image: plugins/docker
