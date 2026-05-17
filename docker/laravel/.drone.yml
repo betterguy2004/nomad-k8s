@@ -4,6 +4,7 @@ name: laravel
 
 trigger:
   branch:
+    - master
     - main
   event:
     - push
