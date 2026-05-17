@@ -2,10 +2,10 @@ path "database/creds/laravel" {
   capabilities = ["read"]
 }
 
-path "secret/data/laravel/*" {
+path "secret/data/laravel" {
   capabilities = ["read"]
 }
 
-path "secret/metadata/laravel/*" {
+path "secret/metadata/laravel" {
   capabilities = ["list"]
 }
