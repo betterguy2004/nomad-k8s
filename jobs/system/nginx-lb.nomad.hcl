@@ -4,6 +4,7 @@ job "nginx-lb" {
 
   group "nginx" {
     network {
+      mode = "host"
       port "http" { static = 80 }
     }
 
