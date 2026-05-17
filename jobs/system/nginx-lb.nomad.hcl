@@ -38,8 +38,46 @@ http {
     {{end}}
   }
 
+  upstream drone {
+    {{range service "drone-server"}}
+    server {{.Address}}:{{.Port}};
+    {{else}}
+    server 127.0.0.1:65535;
+    {{end}}
+  }
+
   server {
     listen 80;
+    server_name drone.hungpq.io.vn;
+
+    location / {
+      proxy_pass http://drone;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_buffering off;
+      chunked_transfer_encoding off;
+    }
+  }
+
+  server {
+    listen 80;
+    server_name wp.hungpq.io.vn;
+    client_max_body_size 64m;
+
+    location / {
+      proxy_pass http://wordpress;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto https;
+    }
+  }
+
+  server {
+    listen 80;
+    server_name _ default_server;
 
     location /health {
       return 200 'ok';
