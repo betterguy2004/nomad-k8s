@@ -94,10 +94,6 @@ EOF
           interval = "10s"
           timeout  = "2s"
         }
-
-        connect {
-          sidecar_service {}
-        }
       }
     }
   }
