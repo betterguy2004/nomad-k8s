@@ -21,7 +21,8 @@
       "Bash(ssh *)",
       "Bash(aws s3 ls *)",
       "Bash(aws dynamodb describe-table *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ]
   }
 }
