@@ -20,7 +20,8 @@ steps:
       - apt-get update && apt-get install -y git unzip libzip-dev
       - docker-php-ext-install zip
       - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-      - cd docker/laravel && composer install --no-interaction
+      - mkdir -p docker/laravel/bootstrap/cache docker/laravel/storage/framework/{sessions,views,cache}
+      - cd docker/laravel && composer install --no-interaction --no-scripts
       - cd docker/laravel && php artisan key:generate --force
       - cd docker/laravel && ./vendor/bin/phpunit
 
