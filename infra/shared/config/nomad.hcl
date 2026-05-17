@@ -1,9 +1,13 @@
 datacenter = "dc1"
 data_dir   = "/opt/nomad"
 
+acl {
+  enabled = true
+}
+
 server {
   enabled          = true
-  bootstrap_expect = SERVER_COUNT
+  bootstrap_expect = 3
 }
 
 client {
@@ -15,12 +19,28 @@ consul {
 }
 
 vault {
-  enabled = true
-  address = "http://active.vault.service.consul:8200"
+  enabled         = true
+  address         = "https://10.0.1.49:8200"
+  tls_skip_verify = true
+
+  default_identity {
+    aud = ["vault.io"]
+    ttl = "1h"
+  }
 }
 
 plugin "docker" {
   config {
     allow_privileged = true
+    volumes {
+      enabled = true
+    }
+  }
+}
+
+client {
+  host_volume "drone-data" {
+    path      = "/opt/drone/data"
+    read_only = false
   }
 }
