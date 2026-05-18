@@ -52,3 +52,13 @@ output "eip_allocation_ids" {
   value       = aws_eip.nomad_cluster[*].id
   description = "EIP allocation IDs"
 }
+
+output "data_volume_ids" {
+  value       = aws_ebs_volume.data[*].id
+  description = "Persistent data EBS volume IDs"
+}
+
+output "data_volume_attachments" {
+  value       = aws_volume_attachment.data[*].device_name
+  description = "Device names for data volume attachments"
+}

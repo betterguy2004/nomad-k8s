@@ -83,12 +83,14 @@ Complete AWS infrastructure using HashiCorp stack for container orchestration, s
 
 **EC2 Instances** (3 nodes, t3.medium, 2 vCPU, 4GB RAM)
 - AMI: Custom Packer build (see next section)
+- Root volume: 20 GB EBS (deleted on terminate)
+- Data volume: 50 GB EBS (persisted on terminate, `delete_on_termination=false`)
 - Auto-join via EC2 tags: `ConsulAutoJoin=auto-join`
 - Each node runs:
-  - **Nomad Server** (Raft consensus, job scheduler)
+  - **Nomad Server** (Raft consensus, job scheduler) → state at `/data/nomad`
   - **Nomad Client** (task execution, resource management)
-  - **Consul Server** (service catalog, health checks, Connect mesh)
-  - **Vault Server** (secrets management, auto-unseal via KMS)
+  - **Consul Server** (service catalog, health checks, Connect mesh) → state at `/data/consul`
+  - **Vault Server** (secrets management, auto-unseal via KMS) → backend stored in Consul
 
 **IAM Roles**
 - EC2 instance role allows:
@@ -123,11 +125,27 @@ Complete AWS infrastructure using HashiCorp stack for container orchestration, s
 - `/etc/systemd/system/nomad.service` — Auto-start on boot
 - `/etc/systemd/system/consul.service` — Auto-start on boot
 - `/etc/systemd/system/vault.service` — Auto-start on boot
+- `/etc/systemd/system/auto-init.service` — One-shot initialization after services start
 
-**User Data Script** (runs after EC2 launch)
-1. Starts Consul agent (discovers cluster via EC2 tags)
-2. Starts Vault (auto-unseals via KMS)
-3. Starts Nomad (joins cluster, becomes server)
+**Boot Sequence** (runs via `server.sh` user data script)
+
+1. **Mount persistent data volume** (`/opt/scripts/mount-data-volume.sh`)
+   - Detects EBS volume (nvme1n1 on Nitro, xvdf on older)
+   - Formats new volume or mounts existing (handles both fresh and recovered cluster)
+   - Creates `/data/{consul,vault,nomad}` directories with correct ownership
+   - Adds to `/etc/fstab` for permanent mount
+
+2. **Start services in order**
+   - Consul (port 8500): Service discovery, Raft consensus
+   - Vault (port 8200): Auto-unseals via KMS after 5-10s
+   - Nomad (port 4646): Joins cluster as server/client
+
+3. **Auto-init after services healthy** (`/etc/systemd/system/auto-init.service`)
+   - Waits for Consul cluster health (all 3 members alive)
+   - Acquires leader lock via Consul KV (only one node runs init)
+   - **Fresh cluster**: Initializes Vault, runs `bootstrap-all.sh` (sets up JWT auth, secrets, database roles)
+   - **Existing cluster**: Detects Vault already initialized, skips bootstrap
+   - Performs health checks on all three services
 
 ### 4. Data Layer (data)
 
@@ -153,6 +171,30 @@ Complete AWS infrastructure using HashiCorp stack for container orchestration, s
 - SSL/TLS: ACM certificate (auto-issued by Terraform)
 - Cache behavior: 24-hour TTL for images, 1-hour for other assets
 - Security: Restricts access via origin access identity (OAI)
+
+### 6. Persistence & Data Recovery
+
+**Separate Data Volume Design**
+
+The cluster uses dedicated EBS volumes (distinct from root volume) for persistent state:
+
+| Component | Location | Persistence | Recovery |
+|-----------|----------|------------|----------|
+| **Consul** | `/data/consul` | RocksDB state file | Rejoin cluster on restart |
+| **Vault** | Consul backend | Encrypted in Consul KV | Auto-unseal via KMS |
+| **Nomad** | `/data/nomad` | Job state, task history | Job state recovered on restart |
+
+**Key Properties**:
+- EBS volumes configured with `delete_on_termination=false` — persists across stop/start and terminate/recreate cycles
+- Initial mount handled by `mount-data-volume.sh` (runs early in boot sequence)
+- Data directory ownership enforced: `consul:consul`, `vault:vault`, `nomad:nomad`
+
+**Recovery Patterns**:
+1. **Stop & Start** (cost-saving, maintenance): Services restart with same cluster state
+2. **Terminate & Recreate** (upgrade, replacement): New instance attaches existing EBS volumes and rejoins
+3. **Fresh Cluster**: New EBS volumes trigger full Vault init and `bootstrap-all.sh` execution
+
+**Leader Election**: Only one node initializes cluster via Consul session/lock mechanism (`auto-init.service`). Followers wait for leader to complete, then join cluster.
 
 ---
 
@@ -186,11 +228,28 @@ WP_OFFLOAD_MEDIA_REGION=us-west-1
 **Job**: `jobs/laravel.nomad.hcl`
 - **Count**: 2 replicas (load balanced)
 - **Prestart Task**: Database migrations (`php artisan migrate --force`)
-- **Driver**: Docker (`asdads6495/laravel:latest`)
+- **Driver**: Docker (`hungpq/laravel:<dynamic-tag>`)
 - **Port**: 9000 (FPM socket)
 - **Resources**: Main task 500 CPU / 512 MB, migrate task 200 CPU / 256 MB
-- **Vault Integration**: Similar to WordPress (dynamic DB creds)
+- **Vault Integration**: JWT auth via `nomad-workloads` role with `laravel` policy
 - **Service Registration**: `laravel.service.consul`
+- **Health Check**: TCP on port 9000 every 10s
+
+**Environment Variables**
+```env
+DB_HOST=<from-consul-kv-rds/endpoint>
+DB_USERNAME=<dynamic-cred-from-vault>
+DB_PASSWORD=<dynamic-cred-from-vault>
+DB_DATABASE=laravel
+APP_KEY=<from-vault-secret/laravel>
+FILESYSTEM_DISK=s3
+AWS_BUCKET=<from-vault-secret/laravel>
+AWS_REGION=us-west-1
+```
+
+**Vault Secrets** (via template blocks)
+- `database/creds/laravel` — Dynamic MySQL user (TTL: 1h)
+- `secret/data/laravel` — Static config (APP_KEY, S3 bucket, region)
 
 ### Nginx Load Balancer
 

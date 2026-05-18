@@ -1,5 +1,5 @@
 datacenter = "dc1"
-data_dir   = "/opt/consul"
+data_dir   = "/data/consul"
 
 server           = true
 bootstrap_expect = SERVER_COUNT

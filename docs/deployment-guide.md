@@ -248,6 +248,15 @@ export WP_DB_HOST="<rds-endpoint>"
 export WP_DB_USER="admin"
 export WP_DB_PASSWORD="<rds-password>"
 export WP_DB_NAME="wordpress"
+
+# Laravel secrets (generate key: openssl rand -base64 32)
+export LARAVEL_APP_KEY="base64:$(openssl rand -base64 32)"
+export LARAVEL_S3_BUCKET="nomad-media-xxx-dev"
+export LARAVEL_S3_REGION="us-west-1"
+export LARAVEL_DB_HOST="<rds-endpoint>"
+export LARAVEL_DB_USER="admin"
+export LARAVEL_DB_PASSWORD="<rds-password>"
+export LARAVEL_DB_NAME="laravel"
 ```
 
 ### 5b. Run Vault Migration Script
@@ -271,8 +280,9 @@ export NOMAD_TOKEN=<bootstrap-token>
 1. Enables Nomad ACL system
 2. Configures Workload Identity (JWT auth to Vault)
 3. Creates `jwt-nomad` auth method in Vault
-4. Creates `wordpress-secrets` and `drone-secrets` policies
-5. Stores secrets in Vault KV v2
+4. Creates policies: `wordpress-secrets`, `laravel`, `drone-secrets`
+5. Stores secrets in Vault KV v2 for WordPress, Laravel, and Drone
+6. Configures database roles for dynamic MySQL credentials
 
 ### 5c. Verify Setup
 
@@ -285,8 +295,17 @@ vault read auth/jwt-nomad/config
 vault read auth/jwt-nomad/role/nomad-workloads
 
 # Check secrets
-vault kv get secret/wordpress/keys
-vault kv get secret/wordpress/db
+vault kv get secret/wordpress
+vault kv get secret/laravel
+vault kv get secret/drone
+
+# Check database roles
+vault read database/creds/wordpress
+vault read database/creds/laravel
+
+# Check JWT role policies
+vault read auth/jwt-nomad/role/nomad-workloads
+# Should show: token_policies = ["wordpress-secrets", "laravel", "drone-secrets"]
 ```
 
 ## Step 6: Deploy CloudFront (Optional)
@@ -549,24 +568,91 @@ consul catalog services  # Should show "test"
 2. Check Nomad-Consul integration: `nomad server members`
 3. Verify Consul connect: `consul connect ca get-config`
 
-### Database credentials not working
+### Data volume not mounted
 
-**Symptom**: Job fails with `Can't connect to MySQL server`
+**Symptom**: `mount-data-volume.sh` fails or `/data` directory missing
 
 **Diagnosis**:
 ```bash
-# Check Vault database role
+# Check if volume is attached
+lsblk  # Look for second device (nvme1n1 or xvdf)
+
+# Check mount status
+df -h
+mountpoint /data
+
+# Check mount logs
+journalctl -u mount-data-volume -n 50
+```
+
+**Solution**:
+1. Verify EBS volume is attached to EC2 instance (check AWS console)
+2. If volume not detected: restart EC2 instance (`aws ec2 reboot-instances`)
+3. Manually mount if script failed:
+   ```bash
+   sudo /opt/scripts/mount-data-volume.sh
+   ```
+4. Check ownership: `ls -la /data/{consul,vault,nomad}`
+
+### Auto-init not completing
+
+**Symptom**: `auto-init.service` fails or incomplete initialization
+
+**Diagnosis**:
+```bash
+journalctl -u auto-init -n 100
+tail -f /var/log/auto-init.log
+
+# Check if leader lock acquired
+consul kv get service/auto-init/leader
+
+# Verify Vault status
+vault status
+```
+
+**Solution**:
+1. Check Consul is healthy: `consul members` (should show 3 members)
+2. Wait for KMS auto-unseal (takes 10-30s after Vault starts)
+3. If bootstrap script not found: manually run
+   ```bash
+   export VAULT_TOKEN=<root-token>
+   export VAULT_ADDR=http://127.0.0.1:8200
+   /opt/scripts/bootstrap-all.sh
+   ```
+4. Inspect logs: `journalctl -u auto-init.service -b`
+
+### Database credentials not working
+
+**Symptom**: Job fails with `Can't connect to MySQL server` (WordPress or Laravel)
+
+**Diagnosis**:
+```bash
+# Check Vault database roles
 vault read database/creds/wordpress
+vault read database/creds/laravel
 
 # Check RDS connectivity from node
-nomad alloc exec <alloc-id> mysql -uroot -ppassword \
-  -h<rds-endpoint> -e "SELECT 1;"
+ALLOC_ID=$(nomad job allocs laravel | grep running | head -1 | awk '{print $1}')
+nomad alloc exec $ALLOC_ID mysql -h<rds-endpoint> -e "SELECT 1;"
+
+# Check Laravel db config in container
+nomad alloc exec $ALLOC_ID env | grep DB_
+nomad alloc exec $ALLOC_ID php artisan db:show
 ```
 
 **Solution**:
 1. Verify RDS is `available`: `aws rds describe-db-instances --db-instance-identifier nomad-k8s-dev`
-2. Verify security group allows access: Check RDS SG inbound rules
-3. Verify Vault can connect to RDS: Check Vault logs
+2. Verify security group allows access: Check RDS inbound rules (port 3306 from cluster SG)
+3. Verify Vault database configuration:
+   ```bash
+   vault read database/config/mysql
+   vault list database/roles
+   ```
+4. Verify Vault JWT role has correct policies:
+   ```bash
+   vault read auth/jwt-nomad/role/nomad-workloads
+   # Should include: laravel, wordpress-secrets, drone-secrets
+   ```
 
 ### CloudFront not working
 
@@ -590,6 +676,125 @@ aws cloudfront get-distribution-config --id <distribution-id> \
 1. Wait for distribution to deploy (Status = "Deployed")
 2. Verify origin S3 bucket exists and is accessible
 3. Re-apply CloudFront config: `terragrunt apply`
+
+## Data Persistence & Recovery
+
+The cluster uses separate EBS volumes for persistent data, enabling safe restart and recovery.
+
+### Persistence Architecture
+
+**Data Location**: `/data/` (mounted from separate EBS volume)
+- `/data/consul` — Consul state, KV store, service catalog
+- `/data/vault` — Vault storage backend (stored in Consul)
+- `/data/nomad` — Nomad job state and task history
+
+**Key Properties**:
+- EBS volumes created with `delete_on_termination=false` — persists when instance stops
+- Mount handled by `mount-data-volume.sh` (runs early in boot sequence)
+- Bootstrap handled by `auto-init.service` (idempotent, leader-elected)
+
+### Boot Sequence
+
+1. **EBS Volume Mount** (`mount-data-volume.sh`)
+   - Runs during `server.sh` execution
+   - Detects and mounts `/dev/nvme1n1` (Nitro) or `/dev/xvdf` (older)
+   - Creates `/data/{consul,vault,nomad}` directories with correct ownership
+
+2. **Service Start** (Consul → Vault → Nomad)
+   - Consul joins cluster via EC2 tag auto-join
+   - Vault auto-unseals via KMS
+   - Nomad joins cluster as server
+
+3. **Auto-Init** (`auto-init.service`)
+   - Waits for all services healthy
+   - Acquires leader lock via Consul KV (only one node initializes)
+   - Fresh cluster: initializes Vault, runs `bootstrap-all.sh`
+   - Existing cluster: verifies config, waits for KMS unseal
+
+### Recovery Scenarios
+
+#### Scenario 1: Stop & Start Instance (Preserve Data)
+
+**Use case**: Maintenance, cost saving (no hourly charge while stopped)
+
+```bash
+# Stop instance (preserves EBS data)
+aws ec2 stop-instances --instance-ids i-0c8f4d8f
+
+# Later: restart instance
+aws ec2 start-instances --instance-ids i-0c8f4d8f
+
+# Cluster recovers automatically:
+# 1. EBS volume remounts (mount-data-volume.sh)
+# 2. Services restart (systemd)
+# 3. auto-init.service runs (detects existing Vault, skips init)
+# 4. Services auto-join existing cluster
+```
+
+**Expected behavior**:
+- All Consul/Vault/Nomad state preserved
+- Service discovery resumes
+- Running jobs resume execution (may need restart if task crashed)
+
+#### Scenario 2: Terminate & Recreate Instance (Full Reset)
+
+**Use case**: Upgrade OS, change instance type, or start fresh
+
+```bash
+# Terminate instance (EBS volume persists if delete_on_termination=false)
+aws ec2 terminate-instances --instance-ids i-0c8f4d8f
+
+# Deploy new instance via Terraform (reuses EBS volumes)
+cd infra/environments/dev/cluster
+terragrunt apply
+
+# New instance:
+# 1. Attaches existing EBS volumes (with persisted data)
+# 2. Mounts /data via mount-data-volume.sh
+# 3. Services start and auto-join cluster
+# 4. auto-init.service detects existing Vault, completes initialization
+```
+
+**Expected behavior**:
+- Cluster state fully recovered
+- No re-initialization needed
+- Jobs resume from where they left off
+
+#### Scenario 3: Complete Reset (Fresh Cluster)
+
+**Use case**: Testing, cleanup, or intentional data wipe
+
+```bash
+# Delete EBS volumes first (NOT covered by terragrunt destroy by default)
+aws ec2 delete-volume --volume-id vol-0c8f4d8f
+
+# Then destroy infrastructure
+cd infra/environments/dev/cluster && terragrunt destroy
+
+# Next deployment will create fresh EBS volumes and initialize Vault from scratch
+```
+
+### Verification Commands
+
+```bash
+# Check data directory mounted and populated
+df -h /data
+ls -la /data/
+
+# Check data volume persistence
+aws ec2 describe-volumes \
+  --filters "Name=tag:Name,Values=nomad-data-*" \
+  --query 'Volumes[*].[VolumeId,State,Size]'
+
+# Verify services using persistent data
+consul kv get -recurse  # Should have KV entries
+vault status            # Should show initialized=true
+nomad job list          # Should show deployed jobs
+
+# Check auto-init logs
+journalctl -u auto-init.service -b
+tail -f /var/log/auto-init.log
+```
 
 ## Cleanup (Destroy Infrastructure)
 
@@ -657,4 +862,4 @@ nomad alloc exec <alloc-id> cat /etc/nginx/conf.d/upstreams.conf
 
 ---
 
-See also: [System Architecture](./system-architecture.md), [Consul Role Overview](./consul-role-overview.md), [Secrets Management Flow](./secrets-management-flow.md)
+See also: [System Architecture](./system-architecture.md), [Consul Role Overview](./consul-role-overview.md), [Secrets Management Flow](./secrets-management-flow.md), [CI/CD Troubleshooting](./cicd-troubleshooting.md)

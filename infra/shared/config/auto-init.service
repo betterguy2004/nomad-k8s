@@ -1,0 +1,18 @@
+[Unit]
+Description=Cluster Auto-Init Service
+After=consul.service vault.service nomad.service
+Requires=consul.service vault.service nomad.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 15
+ExecStart=/opt/scripts/auto-init.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

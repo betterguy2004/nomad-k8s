@@ -2,12 +2,21 @@
 set -e
 
 CONFIGDIR=/ops/shared/config
+SCRIPTSDIR=/ops/shared/scripts
 CONSULCONFIGDIR=/etc/consul.d
 VAULTCONFIGDIR=/etc/vault.d
 NOMADCONFIGDIR=/etc/nomad.d
 
 # Wait for network
 sleep 15
+
+# Mount persistent data volume before starting services
+echo "Mounting data volume..."
+if [[ -x "$SCRIPTSDIR/mount-data-volume.sh" ]]; then
+    sudo "$SCRIPTSDIR/mount-data-volume.sh"
+else
+    echo "WARNING: mount-data-volume.sh not found, using /opt directories"
+fi
 
 CLOUD=$1
 SERVER_COUNT=$2
@@ -34,6 +43,7 @@ sed -e "s/IP_ADDRESS/$IP_ADDRESS/g" \
 
 # Configure Nomad
 sed -e "s/SERVER_COUNT/$SERVER_COUNT/g" \
+    -e "s/IP_ADDRESS/$IP_ADDRESS/g" \
     $CONFIGDIR/nomad.hcl | sudo tee $NOMADCONFIGDIR/nomad.hcl
 
 # Start services in order

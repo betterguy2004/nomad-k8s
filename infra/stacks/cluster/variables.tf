@@ -75,3 +75,9 @@ variable "ssh_key_name" {
   description = "SSH key pair name"
   default     = ""
 }
+
+variable "data_volume_size" {
+  type        = number
+  description = "Size in GB for persistent data EBS volume (Consul/Vault data)"
+  default     = 20
+}

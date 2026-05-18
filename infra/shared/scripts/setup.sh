@@ -74,12 +74,35 @@ sudo mkdir -p /opt/consul
 sudo mkdir -p /opt/vault
 sudo mkdir -p /opt/nomad
 
+# Create directories for recovery script and job files
+sudo mkdir -p /opt/scripts
+sudo mkdir -p /opt/nomad-jobs
+
+# Install scripts
+sudo cp /ops/shared/scripts/nomad-recovery.sh /opt/scripts/
+sudo cp /ops/shared/scripts/mount-data-volume.sh /opt/scripts/
+sudo cp /ops/shared/scripts/auto-init.sh /opt/scripts/
+sudo chmod +x /opt/scripts/*.sh
+
+# Copy job files (flattened structure for recovery script)
+if [[ -d /ops/jobs ]]; then
+    sudo cp /ops/jobs/*.nomad.hcl /opt/nomad-jobs/ 2>/dev/null || true
+    sudo cp /ops/jobs/system/*.nomad.hcl /opt/nomad-jobs/ 2>/dev/null || true
+fi
+
+# Install systemd services
+sudo cp /ops/shared/config/nomad-recovery.service /etc/systemd/system/
+sudo cp /ops/shared/config/auto-init.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
 # Enable services (but don't start - user-data will start them)
 sudo systemctl enable consul
 sudo systemctl enable vault
 sudo systemctl enable nomad
 sudo systemctl enable docker
 sudo systemctl enable nginx
+sudo systemctl enable nomad-recovery
+sudo systemctl enable auto-init
 
 # Cleanup
 sudo apt-get clean

@@ -1,5 +1,5 @@
 datacenter = "dc1"
-data_dir   = "/opt/nomad"
+data_dir   = "/data/nomad"
 
 acl {
   enabled = true
@@ -20,7 +20,7 @@ consul {
 
 vault {
   enabled         = true
-  address         = "https://10.0.1.49:8200"
+  address         = "http://IP_ADDRESS:8200"
   tls_skip_verify = true
 
   default_identity {
