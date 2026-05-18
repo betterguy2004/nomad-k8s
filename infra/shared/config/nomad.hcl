@@ -23,7 +23,7 @@ consul {
 
 vault {
   enabled         = true
-  address         = "http://IP_ADDRESS:8200"
+  address         = "http://active.vault.service.consul:8200"
   tls_skip_verify = true
 
   default_identity {
