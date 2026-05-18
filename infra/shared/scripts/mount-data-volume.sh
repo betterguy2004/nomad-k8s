@@ -10,7 +10,7 @@ MAX_WAIT=60
 LOG_TAG="mount-data-volume"
 
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $1"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $1" >&2
     logger -t "$LOG_TAG" "$1"
 }
 

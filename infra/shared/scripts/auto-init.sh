@@ -11,7 +11,7 @@ MAX_WAIT_VAULT=60
 
 log() {
     local msg="$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $1"
-    echo "$msg" | tee -a "$LOG_FILE"
+    echo "$msg" | tee -a "$LOG_FILE" >&2
     logger -t "$LOG_TAG" "$1"
 }
 
