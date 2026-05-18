@@ -224,88 +224,102 @@ NODE_IP=$(aws ec2 describe-instances \
 
 ## Step 5: Initialize Vault & Nomad ACL
 
-Set up Nomad ACL, Vault JWT auth (Workload Identity), and secrets.
+One-time bootstrap script sets up all Vault secrets, policies, database roles, JWT auth, and Nomad ACL.
 
 ### 5a. Set Environment Variables
 
+Required by `bootstrap-all.sh`:
+
 ```bash
-# Required for vault-migration.sh
-export VAULT_ADDR=https://<node-ip>:8200
-export VAULT_TOKEN=<vault-root-token>
-export NOMAD_NODES="<node1-ip> <node2-ip> <node3-ip>"
-export SSH_KEY=/path/to/nomad-key.pem
+# Vault access
+export VAULT_ADDR=http://127.0.0.1:8200
+export VAULT_TOKEN=<vault-root-token>  # From Vault init output
 
-# WordPress secrets (generate at https://api.wordpress.org/secret-key/1.1/salt/)
-export WP_AUTH_KEY="..."
-export WP_SECURE_AUTH_KEY="..."
-export WP_LOGGED_IN_KEY="..."
-export WP_NONCE_KEY="..."
-export WP_AUTH_SALT="..."
-export WP_SECURE_AUTH_SALT="..."
-export WP_LOGGED_IN_SALT="..."
-export WP_NONCE_SALT="..."
-export WP_DB_HOST="<rds-endpoint>"
-export WP_DB_USER="admin"
-export WP_DB_PASSWORD="<rds-password>"
-export WP_DB_NAME="wordpress"
+# RDS MySQL admin credentials
+export RDS_HOST=nomad-k8s-dev.cxyz.us-west-1.rds.amazonaws.com
+export RDS_ADMIN_USER=admin
+export RDS_ADMIN_PASS=<rds-password>
 
-# Laravel secrets (generate key: openssl rand -base64 32)
-export LARAVEL_APP_KEY="base64:$(openssl rand -base64 32)"
-export LARAVEL_S3_BUCKET="nomad-media-xxx-dev"
-export LARAVEL_S3_REGION="us-west-1"
-export LARAVEL_DB_HOST="<rds-endpoint>"
-export LARAVEL_DB_USER="admin"
-export LARAVEL_DB_PASSWORD="<rds-password>"
-export LARAVEL_DB_NAME="laravel"
+# Docker Hub credentials (for Drone runner builds)
+export DOCKERHUB_USER=<your-dockerhub-username>
+export DOCKERHUB_PASS=<your-dockerhub-password>
+
+# GitHub OAuth (for Drone CI authentication) - REQUIRED
+export GITHUB_CLIENT_ID=<github-oauth-app-client-id>
+export GITHUB_CLIENT_SECRET=<github-oauth-app-client-secret>
+
+# S3 media bucket
+export S3_BUCKET=nomad-media-xxx-dev
+export S3_REGION=us-west-1
+
+# Nomad API access
+export NOMAD_ADDR=http://127.0.0.1:4646
 ```
 
-### 5b. Run Vault Migration Script
+### 5b. Run Bootstrap Script
 
 ```bash
-cd scripts
+cd vault/setup
 
-# Deploy Nomad config with ACL + Workload Identity
-./vault-migration.sh phase1-config
-./vault-migration.sh phase1-restart
-
-# Bootstrap Nomad ACL (SAVE THE TOKEN!)
-ssh -i $SSH_KEY ubuntu@<node1-ip> 'nomad acl bootstrap'
-export NOMAD_TOKEN=<bootstrap-token>
-
-# Configure Vault JWT auth + store secrets
-./vault-migration.sh vault-only
+# One-time initialization (idempotent)
+./bootstrap-all.sh
 ```
 
 **Script does**:
-1. Enables Nomad ACL system
-2. Configures Workload Identity (JWT auth to Vault)
-3. Creates `jwt-nomad` auth method in Vault
-4. Creates policies: `wordpress-secrets`, `laravel`, `drone-secrets`
-5. Stores secrets in Vault KV v2 for WordPress, Laravel, and Drone
-6. Configures database roles for dynamic MySQL credentials
+1. Enables Vault KV v2 and database secrets engines
+2. Stores static secrets in Vault:
+   - `secret/wordpress/keys` — WordPress auth/salt keys (auto-generated)
+   - `secret/laravel` — Laravel app key and S3 config
+   - `secret/drone/server` — Drone GitHub OAuth credentials
+   - `secret/drone/runner` — Docker Hub credentials
+   - `secret/drone/vault-extension` — Long-lived token for drone-vault bridge
+3. Configures Vault database engine:
+   - Connection to RDS MySQL
+   - `database/roles/wordpress` — Dynamic user with 1h TTL
+   - `database/roles/laravel` — Dynamic user with 1h TTL
+4. Creates Vault policies:
+   - `wordpress` — Access to database creds and KV secrets
+   - `laravel` — Access to database creds and KV secrets
+   - `drone` — Access to Drone secrets
+5. Configures JWT auth:
+   - Auth method: `jwt-nomad` (Nomad Workload Identity)
+   - Role: `nomad-workloads` with policies: wordpress, laravel, drone
+6. Bootstraps Nomad ACL (one-time, stores token in Vault)
+7. Creates MySQL databases: wordpress, laravel
 
 ### 5c. Verify Setup
 
 ```bash
-# Check Nomad JWKS endpoint
-curl http://<node-ip>:4646/.well-known/jwks.json
+# Check Vault is unsealed and initialized
+vault status
+# Expected: initialized=true, sealed=false
 
-# Check Vault JWT auth
-vault read auth/jwt-nomad/config
-vault read auth/jwt-nomad/role/nomad-workloads
-
-# Check secrets
-vault kv get secret/wordpress
+# Check secrets created
+vault kv get secret/wordpress/keys
 vault kv get secret/laravel
-vault kv get secret/drone
+vault kv get secret/drone/server
 
-# Check database roles
+# Check database roles (test credential generation)
 vault read database/creds/wordpress
 vault read database/creds/laravel
 
-# Check JWT role policies
+# Check JWT auth configuration
+vault read auth/jwt-nomad/config
 vault read auth/jwt-nomad/role/nomad-workloads
-# Should show: token_policies = ["wordpress-secrets", "laravel", "drone-secrets"]
+# Should show: token_policies = ["wordpress", "laravel", "drone"]
+
+# Check Vault policies
+vault policy list
+vault policy read wordpress
+vault policy read laravel
+vault policy read drone
+
+# Check Nomad JWKS endpoint (for JWT validation)
+curl http://127.0.0.1:4646/.well-known/jwks.json
+
+# Check Nomad ACL bootstrapped
+export NOMAD_TOKEN=$(vault kv get -field=token secret/nomad/bootstrap)
+nomad acl token self
 ```
 
 ## Step 6: Deploy CloudFront (Optional)
@@ -494,24 +508,31 @@ nomad alloc exec $NGINX_ALLOC cat /etc/nginx/conf.d/upstreams.conf
 
 ### Cluster nodes won't join
 
-**Symptom**: Only 1 node appears in `nomad node status`
+**Symptom**: Only 1 node appears in `nomad node status` or `nomad server members`
 
 **Diagnosis**:
 ```bash
 # SSH into a node (via Systems Manager Session Manager or bastion)
+nomad server members
 consul members
 
-# Check Consul logs
-journalctl -u consul -f
+# Check Nomad server_join logs
+journalctl -u nomad -f | grep -i "join\|discover"
 
-# Check auto-join configuration
+# Check Consul logs
+journalctl -u consul -f | grep -i "join\|retry"
+
+# Verify auto-join configuration
+cat /opt/nomad/config/nomad.hcl | grep -A 3 "server_join"
 cat /opt/consul/config/consul.hcl | grep retry_join
 ```
 
 **Solution**:
-1. Verify EC2 tags: `aws ec2 describe-tags --filters "Name=resource-type,Values=instance"`
-2. Verify IAM role has `ec2:DescribeTags` permission
-3. Restart Consul: `systemctl restart consul`
+1. Verify EC2 tags set correctly: `aws ec2 describe-instances --filters "Name=tag:ConsulAutoJoin,Values=auto-join" --region us-west-1`
+2. Verify IAM role has `ec2:DescribeInstances` and `ec2:DescribeTags` permissions (checked in `infra/stacks/cluster/iam.tf`)
+3. Restart Nomad: `systemctl restart nomad` (will auto-join via server_join block)
+4. Restart Consul: `systemctl restart consul` (will auto-join via gossip)
+5. Check if nodes can reach each other on required ports (8300-8302, 8500-8502, 4646)
 
 ### Vault is sealed
 
@@ -583,16 +604,20 @@ mountpoint /data
 
 # Check mount logs
 journalctl -u mount-data-volume -n 50
+
+# Check volume attachment in AWS
+aws ec2 describe-volumes --filters "Name=tag:Role,Values=consul-vault-nomad-data"
 ```
 
 **Solution**:
-1. Verify EBS volume is attached to EC2 instance (check AWS console)
-2. If volume not detected: restart EC2 instance (`aws ec2 reboot-instances`)
-3. Manually mount if script failed:
+1. Verify EBS volume is attached to EC2 instance: `aws ec2 describe-volume-attachments --filters "Name=instance-id,Values=i-xxx"`
+2. If volume not detected: restart EC2 instance (`aws ec2 reboot-instances --instance-ids i-xxx`)
+3. If volume not attached at all: manually attach via AWS console or CLI (device `/dev/xvdf`)
+4. Manually mount if script failed:
    ```bash
    sudo /opt/scripts/mount-data-volume.sh
    ```
-4. Check ownership: `ls -la /data/{consul,vault,nomad}`
+5. Check ownership: `ls -la /data/{consul,vault,nomad}` (should be `consul:consul`, `vault:vault`, `nomad:nomad`)
 
 ### Auto-init not completing
 

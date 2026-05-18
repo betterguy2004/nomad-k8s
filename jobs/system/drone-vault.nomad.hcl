@@ -23,11 +23,13 @@ job "drone-vault" {
 
       template {
         data = <<EOF
-{{with secret "secret/data/drone"}}
+{{with secret "secret/data/drone/server"}}
 DRONE_SECRET={{.Data.data.rpc_secret}}
 {{end}}
+{{with secret "secret/data/drone/vault-extension"}}
+VAULT_TOKEN={{.Data.data.token}}
+{{end}}
 VAULT_ADDR=http://active.vault.service.consul:8200
-VAULT_TOKEN={{env "VAULT_TOKEN"}}
 EOF
         destination = "secrets/env"
         env         = true

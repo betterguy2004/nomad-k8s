@@ -3,12 +3,12 @@ job "drone-runner" {
   type        = "system"
 
   group "runner" {
+    vault {
+      policies = ["drone"]
+    }
+
     task "runner" {
       driver = "docker"
-
-      vault {
-        role = "nomad-workloads"
-      }
 
       config {
         image      = "drone/drone-runner-docker:1"

@@ -9,6 +9,10 @@ job "drone-server" {
       port "http" { to = 80 }
     }
 
+    vault {
+      policies = ["drone"]
+    }
+
     volume "drone-data" {
       type      = "host"
       source    = "drone-data"
@@ -17,10 +21,6 @@ job "drone-server" {
 
     task "server" {
       driver = "docker"
-
-      vault {
-        role = "nomad-workloads"
-      }
 
       config {
         image = "drone/drone:2"

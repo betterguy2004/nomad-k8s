@@ -83,9 +83,10 @@ Complete AWS infrastructure using HashiCorp stack for container orchestration, s
 
 **EC2 Instances** (3 nodes, t3.medium, 2 vCPU, 4GB RAM)
 - AMI: Custom Packer build (see next section)
-- Root volume: 20 GB EBS (deleted on terminate)
+- Root volume: 30 GB EBS (deleted on terminate)
 - Data volume: 50 GB EBS (persisted on terminate, `delete_on_termination=false`)
 - Auto-join via EC2 tags: `ConsulAutoJoin=auto-join`
+- Auto-discovery: Nomad `server_join` uses AWS tag-based discovery for server clustering
 - Each node runs:
   - **Nomad Server** (Raft consensus, job scheduler) → state at `/data/nomad`
   - **Nomad Client** (task execution, resource management)
@@ -204,12 +205,25 @@ The cluster uses dedicated EBS volumes (distinct from root volume) for persisten
 
 **Job**: `jobs/wordpress.nomad.hcl`
 - **Count**: 2 replicas (load balanced)
-- **Driver**: Docker (`asdads6495/wordpress:latest`)
-- **Port**: 9000 (FPM socket)
+- **Driver**: Docker (`wordpress:php8.1-apache`)
+- **Port**: 80 (HTTP)
 - **Resources**: 500 CPU, 512 MB memory
-- **Vault Integration**: Retrieves dynamic MySQL creds + static auth keys
+- **Vault Integration**: Group-level policy `wordpress` (JWT auth via Workload Identity)
 - **Service Registration**: Consul discovers as `wordpress.service.consul`
-- **Health Check**: TCP on port 9000 every 10s
+- **Health Check**: HTTP on path `/wp-admin/install.php` every 10s
+
+**Vault Access** (group-level):
+```hcl
+group "wordpress" {
+  vault {
+    policies = ["wordpress"]
+  }
+}
+```
+
+**Secrets Retrieved**:
+- `database/creds/wordpress` — Dynamic MySQL credentials (1h TTL, auto-renewed)
+- `secret/data/wordpress/keys` — WordPress auth/salt keys (KV v2)
 
 **Environment Variables**
 ```env
@@ -217,10 +231,9 @@ WORDPRESS_DB_HOST=<from-consul-kv-rds/endpoint>
 WORDPRESS_DB_USER=<dynamic-cred-from-vault>
 WORDPRESS_DB_PASSWORD=<dynamic-cred-from-vault>
 WORDPRESS_DB_NAME=wordpress
-WORDPRESS_AUTH_KEY=<from-vault-secret/wordpress>
-WORDPRESS_SECURE_AUTH_KEY=<from-vault-secret/wordpress>
-WP_OFFLOAD_MEDIA_BUCKET=nomad-media-xxx-dev
-WP_OFFLOAD_MEDIA_REGION=us-west-1
+WORDPRESS_AUTH_KEY=<from-vault-secret/wordpress/keys>
+WORDPRESS_SECURE_AUTH_KEY=<from-vault-secret/wordpress/keys>
+# ... other auth/salt keys
 ```
 
 ### Laravel Service
@@ -228,12 +241,25 @@ WP_OFFLOAD_MEDIA_REGION=us-west-1
 **Job**: `jobs/laravel.nomad.hcl`
 - **Count**: 2 replicas (load balanced)
 - **Prestart Task**: Database migrations (`php artisan migrate --force`)
-- **Driver**: Docker (`hungpq/laravel:<dynamic-tag>`)
-- **Port**: 9000 (FPM socket)
+- **Driver**: Docker (`asdads6495/laravel:latest`)
+- **Port**: 80 (HTTP)
 - **Resources**: Main task 500 CPU / 512 MB, migrate task 200 CPU / 256 MB
-- **Vault Integration**: JWT auth via `nomad-workloads` role with `laravel` policy
+- **Vault Integration**: Group-level policy `laravel` (JWT auth via Workload Identity)
 - **Service Registration**: `laravel.service.consul`
-- **Health Check**: TCP on port 9000 every 10s
+- **Health Check**: TCP on port 80 every 10s
+
+**Vault Access** (group-level):
+```hcl
+group "laravel" {
+  vault {
+    policies = ["laravel"]
+  }
+}
+```
+
+**Secrets Retrieved**:
+- `database/creds/laravel` — Dynamic MySQL credentials (1h TTL, auto-renewed)
+- `secret/data/laravel` — Laravel app key and S3 configuration (KV v2)
 
 **Environment Variables**
 ```env
@@ -246,10 +272,6 @@ FILESYSTEM_DISK=s3
 AWS_BUCKET=<from-vault-secret/laravel>
 AWS_REGION=us-west-1
 ```
-
-**Vault Secrets** (via template blocks)
-- `database/creds/laravel` — Dynamic MySQL user (TTL: 1h)
-- `secret/data/laravel` — Static config (APP_KEY, S3 bucket, region)
 
 ### Nginx Load Balancer
 
@@ -265,18 +287,22 @@ AWS_REGION=us-west-1
 ### Drone CI/CD System
 
 **Server** (`jobs/system/drone-server.nomad.hcl`)
-- Orchestrates CI/CD pipelines
-- Stores config in Consul KV
-- Integrates with Vault for secret injection
+- Orchestrates CI/CD pipelines from GitHub webhooks
+- Vault integration via group-level policy `drone`
+- Secrets: GitHub OAuth credentials from `secret/data/drone/server`
+- Storage: SQLite database at `/data/drone-data` (persistent volume)
 
 **Runner** (`jobs/system/drone-runner.nomad.hcl`)
-- Executes jobs in Docker containers
-- Pulls Docker credentials from Vault
-- Reports back to Drone Server
+- Executes CI/CD jobs in Docker containers
+- Vault integration via group-level policy `drone`
+- Secrets: RPC secret and Docker credentials from `secret/data/drone/runner`
+- System-wide job (runs on all cluster nodes)
 
 **Vault Extension** (`jobs/system/drone-vault.nomad.hcl`)
-- Bridges Drone pipelines to Vault
-- Allows `.drone.yml` to reference `secret/data/drone`
+- Bridges Drone pipelines to Vault secrets
+- Vault integration via group-level policy `drone`
+- Allows `.drone.yml` to reference `secret/data/drone/*` paths
+- Uses long-lived token from `secret/data/drone/vault-extension`
 
 ---
 
@@ -409,59 +435,60 @@ path "secret/data/drone/*" {
 
 ### Nomad-Vault Integration (Workload Identity)
 
-Uses **JWT authentication** instead of static tokens.
+Uses **JWT authentication** instead of static tokens. Policies are assigned at **group level** so all tasks in the group share the same Vault access.
 
-1. **Nomad Server Config** enables Workload Identity:
-   ```hcl
-   vault {
-     enabled = true
-     address = "https://10.0.1.49:8200"
-     default_identity {
-       aud = ["vault.io"]
-       ttl = "1h"
-     }
-   }
-   ```
+**1. Job Group Configuration** (applies to all tasks in group):
+```hcl
+group "wordpress" {
+  vault {
+    policies = ["wordpress"]  # Group-level policy
+  }
+  
+  task "wordpress" {
+    template {
+      data = <<EOF
+{{- with secret "database/creds/wordpress" }}
+DB_USER={{.Data.username}}
+DB_PASS={{.Data.password}}
+{{- end }}
+      EOF
+      destination = "secrets/db.env"
+      env = true
+    }
+  }
+}
+```
 
-2. **Job Definition** references Vault role:
-   ```hcl
-   task "wordpress" {
-     vault {
-       role = "nomad-workloads"
-     }
-   }
-   ```
+**2. Nomad Server Configuration** enables Workload Identity:
+```hcl
+vault {
+  enabled = true
+  address = "https://10.0.1.49:8200"
+  default_identity {
+    aud = ["vault.io"]
+    ttl = "1h"
+  }
+}
+```
 
-3. **Vault JWT Auth** validates Nomad-signed JWTs:
-   ```hcl
-   # auth/jwt-nomad/role/nomad-workloads
-   bound_audiences = ["vault.io"]
-   user_claim      = "nomad_job_id"
-   token_policies  = ["wordpress-secrets", "drone-secrets"]
-   ```
+**3. Vault JWT Auth** validates Nomad-signed JWTs:
+```hcl
+# auth/jwt-nomad/role/nomad-workloads
+bound_audiences = ["vault.io"]
+user_claim      = "/nomad_job_id"
+user_claim_json_pointer = true
+token_policies  = ["wordpress", "laravel", "drone"]
+token_ttl       = "30m"
+token_period    = "30m"  # Auto-renew
+```
 
-4. **Template Blocks** fetch secrets from Vault:
-   ```hcl
-   template {
-     data = <<EOF
-   {{- with secret "secret/data/wordpress/keys" }}
-   WORDPRESS_AUTH_KEY={{ .Data.data.auth_key }}
-   {{- end }}
-   {{- with secret "secret/data/wordpress/db" }}
-   WORDPRESS_DB_PASSWORD={{ .Data.data.password }}
-   {{- end }}
-     EOF
-     destination = "secrets/wordpress.env"
-     env         = true
-   }
-   ```
-
-5. **Authentication Flow**:
-   - Nomad generates JWT with task identity claims
-   - JWT signed with Nomad's key (JWKS at `/.well-known/jwks.json`)
-   - Vault validates JWT via JWKS
-   - Vault returns token with assigned policies
-   - Template blocks render secrets into container
+**4. Authentication Flow**:
+1. Group starts; Nomad generates JWT with claims: `nomad_job_id`, `nomad_namespace`, etc.
+2. JWT signed with Nomad's private key (JWKS at `/.well-known/jwks.json`)
+3. Vault validates JWT signature via JWKS
+4. Vault maps group policy (e.g., "wordpress") to returned token policies
+5. Template blocks authenticate with Vault token and render secrets
+6. Nomad auto-renews token before expiry (TTL 30m, period allows renewals)
 
 ---
 

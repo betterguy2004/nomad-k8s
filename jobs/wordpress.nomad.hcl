@@ -9,12 +9,12 @@ job "wordpress" {
       port "http" { to = 80 }
     }
 
+    vault {
+      policies = ["wordpress"]
+    }
+
     task "wordpress" {
       driver = "docker"
-
-      vault {
-        role = "nomad-workloads"
-      }
 
       config {
         image = "wordpress:php8.1-apache"
@@ -23,22 +23,22 @@ job "wordpress" {
 
       template {
         data = <<EOF
-{{- with secret "secret/data/wordpress/keys" }}
-WORDPRESS_AUTH_KEY={{ .Data.data.auth_key }}
-WORDPRESS_SECURE_AUTH_KEY={{ .Data.data.secure_auth_key }}
-WORDPRESS_LOGGED_IN_KEY={{ .Data.data.logged_in_key }}
-WORDPRESS_NONCE_KEY={{ .Data.data.nonce_key }}
-WORDPRESS_AUTH_SALT={{ .Data.data.auth_salt }}
-WORDPRESS_SECURE_AUTH_SALT={{ .Data.data.secure_auth_salt }}
-WORDPRESS_LOGGED_IN_SALT={{ .Data.data.logged_in_salt }}
-WORDPRESS_NONCE_SALT={{ .Data.data.nonce_salt }}
-{{- end }}
-{{- with secret "secret/data/wordpress/db" }}
-WORDPRESS_DB_HOST={{ .Data.data.host }}
-WORDPRESS_DB_USER={{ .Data.data.user }}
-WORDPRESS_DB_PASSWORD={{ .Data.data.password }}
-WORDPRESS_DB_NAME={{ .Data.data.name }}
-{{- end }}
+WORDPRESS_DB_HOST={{key "rds/endpoint"}}
+{{with secret "database/creds/wordpress"}}
+WORDPRESS_DB_USER={{.Data.username}}
+WORDPRESS_DB_PASSWORD={{.Data.password}}
+WORDPRESS_DB_NAME=wordpress
+{{end}}
+{{with secret "secret/data/wordpress/keys"}}
+WORDPRESS_AUTH_KEY={{.Data.data.auth_key}}
+WORDPRESS_SECURE_AUTH_KEY={{.Data.data.secure_auth_key}}
+WORDPRESS_LOGGED_IN_KEY={{.Data.data.logged_in_key}}
+WORDPRESS_NONCE_KEY={{.Data.data.nonce_key}}
+WORDPRESS_AUTH_SALT={{.Data.data.auth_salt}}
+WORDPRESS_SECURE_AUTH_SALT={{.Data.data.secure_auth_salt}}
+WORDPRESS_LOGGED_IN_SALT={{.Data.data.logged_in_salt}}
+WORDPRESS_NONCE_SALT={{.Data.data.nonce_salt}}
+{{end}}
 EOF
         destination = "secrets/wordpress.env"
         env         = true

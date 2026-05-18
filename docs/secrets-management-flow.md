@@ -226,42 +226,65 @@ Nomad tự động:
 
 ### Policy Architecture
 
+Policies are created during bootstrap and assigned at the **job group level**:
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                      VAULT POLICIES                              │
 │                                                                  │
 │  ┌─────────────────┐                                            │
-│  │ wordpress-      │                                            │
-│  │ secrets         │──► CAN read secret/data/wordpress/*        │
-│  │ policy          │                                            │
+│  │ wordpress       │──► CAN read database/creds/wordpress       │
+│  │ policy          │──► CAN read secret/data/wordpress/*        │
 │  └─────────────────┘                                            │
 │                                                                  │
 │  ┌─────────────────┐                                            │
-│  │ drone-secrets   │                                            │
-│  │ policy          │──► CAN read secret/data/drone/*            │
+│  │ laravel         │──► CAN read database/creds/laravel         │
+│  │ policy          │──► CAN read secret/data/laravel/*          │
+│  └─────────────────┘                                            │
+│                                                                  │
+│  ┌─────────────────┐                                            │
+│  │ drone           │──► CAN read secret/data/drone/*            │
+│  │ policy          │                                            │
 │  └─────────────────┘                                            │
 │                                                                  │
 │  ┌─────────────────────────────────────────────────────────┐    │
 │  │ nomad-workloads role (JWT auth)                          │    │
-│  │   policies = ["wordpress-secrets", "drone-secrets"]      │    │
+│  │   token_policies = ["wordpress", "laravel", "drone"]     │    │
 │  │   bound_audiences = ["vault.io"]                         │    │
-│  │   user_claim = "nomad_job_id"                            │    │
+│  │   user_claim = "/nomad_job_id"                           │    │
+│  │   token_period = "30m" (auto-renew)                       │    │
 │  └─────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Creation & Deployment
+
+Policies are created by `vault/setup/bootstrap-all.sh`:
+1. Loads policy definitions from `vault/policies/*.hcl`
+2. Applies to Vault cluster
+3. Job groups reference policies by name:
+   ```hcl
+   group "wordpress" {
+     vault {
+       policies = ["wordpress"]
+     }
+   }
+   ```
+
 ### Nomad-Vault Integration (Workload Identity)
 
-Nomad 2.x uses **Workload Identity** with JWT tokens instead of static Vault tokens.
+Nomad uses **Workload Identity** with JWT tokens instead of static Vault tokens. Policies are assigned at the **group level**.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                  WORKLOAD IDENTITY FLOW                          │
 │                                                                  │
-│  Nomad Job Definition                                            │
+│  Nomad Job Group Definition                                      │
 │         │                                                        │
-│         │  task "wordpress" {                                    │
-│         │    vault { role = "nomad-workloads" }                  │
+│         │  group "wordpress" {                                   │
+│         │    vault {                                             │
+│         │      policies = ["wordpress"]  ◄─ Group policy         │
+│         │    }                                                   │
 │         │  }                                                     │
 │         │                                                        │
 │         ▼                                                        │
@@ -272,7 +295,7 @@ Nomad 2.x uses **Workload Identity** with JWT tokens instead of static Vault tok
 │  │     - aud: ["vault.io"]                                  │    │
 │  │     - nomad_job_id: "wordpress"                          │    │
 │  │     - nomad_namespace: "default"                         │    │
-│  │     - nomad_task: "wordpress"                            │    │
+│  │     - nomad_group: "wordpress"                           │    │
 │  │                                                          │    │
 │  │  2. Signs JWT with Nomad's private key                   │    │
 │  │     (JWKS available at /.well-known/jwks.json)           │    │
@@ -284,26 +307,34 @@ Nomad 2.x uses **Workload Identity** with JWT tokens instead of static Vault tok
 │  │                                                          │    │
 │  │  1. Validates JWT signature via Nomad JWKS               │    │
 │  │  2. Checks bound_audiences = "vault.io"                  │    │
-│  │  3. Maps claims to token metadata                        │    │
-│  │  4. Returns Vault token with assigned policies           │    │
+│  │  3. Maps user_claim (/nomad_job_id) to identity         │    │
+│  │  4. Looks up role "nomad-workloads"                      │    │
+│  │  5. Assigns policies: wordpress/laravel/drone (allowed)  │    │
+│  │  6. Returns Vault token with group policies              │    │
+│  │  7. Token auto-renews via period = "30m"                 │    │
 │  └──────────────────────────┬──────────────────────────────┘    │
 │                             │                                    │
 │                             ▼                                    │
 │  ┌─────────────────────────────────────────────────────────┐    │
-│  │ Container Environment                                    │    │
+│  │ Container Tasks (All in group inherit policy)            │    │
 │  │                                                          │    │
 │  │  Vault token injected, templates rendered:               │    │
 │  │  {{with secret "secret/data/wordpress/keys"}}            │    │
 │  │  WORDPRESS_AUTH_KEY={{.Data.data.auth_key}}              │    │
 │  │  {{end}}                                                 │    │
+│  │  {{with secret "database/creds/wordpress"}}              │    │
+│  │  DB_USER={{.Data.username}}  (auto-renewed by Nomad)    │    │
+│  │  {{end}}                                                 │    │
 │  └─────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Benefits of Workload Identity:**
-- No static Vault tokens stored in Nomad config
-- Automatic token rotation via JWT TTL
-- Fine-grained identity per task (job_id, namespace, task name in claims)
+**Benefits of Group-Level Policies:**
+- All tasks in group share same Vault access
+- Policy enforced at group, not per-task
+- Simpler configuration, consistent access control
+- JWT auto-renewal (30m period) prevents token expiry
+- Fine-grained identity via job_id and namespace in claims
 
 ---
 
@@ -404,21 +435,47 @@ Nomad 2.x uses **Workload Identity** with JWT tokens instead of static Vault tok
 
 ## 7. Secrets Inventory
 
-| Secret Type | Path | Consumer | TTL | Rotation |
-|-------------|------|----------|-----|----------|
-| WP Auth Keys | `secret/wordpress/keys` | WordPress | Static | Manual |
-| WP DB Creds | `secret/wordpress/db` | WordPress | Static | Manual |
-| Drone Server | `secret/drone/server` | Drone | Static | Manual |
-| Nomad ACL Token | N/A | Admin only | N/A | After bootstrap |
-| Vault Root Token | N/A | Admin only | N/A | After init |
-| AWS KMS Key | AWS | Vault | N/A | AWS managed |
+| Secret Type | Path | Engine | Consumer | TTL | Rotation |
+|-------------|------|--------|----------|-----|----------|
+| WordPress auth keys | `secret/wordpress/keys` | KV v2 | WordPress | ∞ | Manual (via bootstrap) |
+| WordPress DB creds | `database/creds/wordpress` | Database | WordPress | 1h | Auto-renewed by Nomad |
+| Laravel app key | `secret/laravel` | KV v2 | Laravel | ∞ | Manual (via bootstrap) |
+| Laravel DB creds | `database/creds/laravel` | Database | Laravel | 1h | Auto-renewed by Nomad |
+| Drone server config | `secret/drone/server` | KV v2 | Drone Server | ∞ | Manual |
+| Drone runner config | `secret/drone/runner` | KV v2 | Drone Runner | ∞ | Manual |
+| Drone-Vault token | `secret/drone/vault-extension` | KV v2 | Drone Vault | ∞ | Manual (730h period) |
+| Nomad ACL token | `secret/nomad/bootstrap` | KV v2 | Admins | ∞ | After bootstrap |
+| Vault root token | (env var) | N/A | One-time init | ∞ | After init |
+| AWS KMS key | AWS | KMS | Vault | N/A | AWS managed |
 
 **Auth Method:** JWT (Workload Identity) at path `jwt-nomad`
-**Role:** `nomad-workloads` (bound to audience `vault.io`)
+**Role:** `nomad-workloads` (group policies assigned via `vault { policies = [...] }`)
+**Token TTL:** 30m with period renewal (auto-renews)
 
 ---
 
-## 8. Troubleshooting Commands
+## 8. Setup & Troubleshooting
+
+### Initial Setup
+
+One-time bootstrap configures all secrets and policies:
+
+```bash
+cd vault/setup
+
+# Set required environment variables
+export VAULT_ADDR=http://127.0.0.1:8200
+export VAULT_TOKEN=<vault-root-token>
+export RDS_HOST=<rds-endpoint>
+export RDS_ADMIN_PASS=<rds-password>
+export GITHUB_CLIENT_ID=<github-oauth-id>
+export GITHUB_CLIENT_SECRET=<github-oauth-secret>
+
+# Run bootstrap (idempotent)
+./bootstrap-all.sh
+```
+
+### Verification Commands
 
 ```bash
 # Check Vault status
@@ -433,24 +490,55 @@ vault read auth/jwt-nomad/role/nomad-workloads
 
 # Test KV secrets
 vault kv get secret/wordpress/keys
-vault kv get secret/wordpress/db
+vault kv get secret/laravel
 vault kv get secret/drone/server
+
+# Test database roles (generates dynamic creds)
+vault read database/creds/wordpress
+vault read database/creds/laravel
 
 # Check Vault policies
 vault policy list
-vault policy read wordpress-secrets
-vault policy read drone-secrets
+vault policy read wordpress
+vault policy read laravel
+vault policy read drone
 
 # Check Nomad JWKS endpoint (for JWT validation)
 curl http://localhost:4646/.well-known/jwks.json
 
 # Debug Nomad job secrets
 nomad alloc logs <alloc-id>
-nomad alloc exec <alloc-id> env | grep -E "WORDPRESS_|DRONE_"
+nomad alloc exec <alloc-id> env | grep -E "DB_|WORDPRESS_|DRONE_"
 
 # Check Nomad ACL
-export NOMAD_TOKEN=<bootstrap-token>
+export NOMAD_TOKEN=$(vault kv get -field=token secret/nomad/bootstrap)
 nomad acl token self
+```
+
+### Troubleshooting
+
+**Job fails: "permission denied" accessing secret**
+```bash
+# Check group has correct policy assigned
+nomad job inspect <job> | grep -A 5 "vault"
+
+# Verify policy exists
+vault policy read <policy-name>
+
+# Check JWT role has policy in allowed_policies
+vault read auth/jwt-nomad/role/nomad-workloads
+```
+
+**Database credentials fail**
+```bash
+# Verify database config
+vault read database/config/mysql
+
+# Test role directly
+vault read database/creds/wordpress
+
+# Check role TTL/max_ttl
+vault read database/roles/wordpress
 ```
 
 ---
