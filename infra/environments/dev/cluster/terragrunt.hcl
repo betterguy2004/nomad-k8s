@@ -15,7 +15,7 @@ dependency "data" {
 }
 
 inputs = {
-  ami_id                    = "ami-03381bae674bb63b5"
+  ami_id                    = "ami-0d617e5b142c57601"
   public_subnet_id          = dependency.base_infra.outputs.public_subnet_id
   cluster_security_group_id = dependency.base_infra.outputs.cluster_security_group_id
   kms_key_id                = dependency.base_infra.outputs.kms_key_id
